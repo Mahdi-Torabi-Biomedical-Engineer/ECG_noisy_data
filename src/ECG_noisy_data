@@ -1,0 +1,137 @@
+import csv
+import math
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import scipy.fftpack
+import scipy.signal as signal
+
+# Load ECG data
+def load_ecg_data(filepath):
+    dataset = pd.read_csv(filepath)
+    ecg_signal = dataset['hart'].values
+    return ecg_signal, dataset
+
+# Compute the FFT and frequency axis
+def compute_fft(signal, Fs):
+    N = len(signal)
+    yf = scipy.fftpack.fft(signal)
+    xf = np.linspace(0.0, 1.0 / (2.0 * (1.0 / Fs)), int(N / 2))
+    return xf, 2.0 / N * np.abs(yf[:N // 2])
+
+# Plot time-domain and frequency-domain signals
+def plot_time_freq_domain(x, y, xf, yf, y_filtered=None, yf_filtered=None):
+    fig_td, axs_td = plt.subplots(2, 1)
+    fig_td.suptitle('Time Domain Signals')
+    fig_fd, axs_fd = plt.subplots(2, 1)
+    fig_fd.suptitle('Frequency Domain Signals')
+
+    # Original signals
+    axs_td[0].plot(x, y, color='r', linewidth=0.7)
+    axs_td[0].set_title('Before filtering')
+    axs_fd[0].plot(xf, yf, color='r', linewidth=0.7)
+    axs_fd[0].set_ylim([0, 0.2])
+    axs_fd[0].set_title('Before filtering')
+
+    # Filtered signals (if provided)
+    if y_filtered is not None and yf_filtered is not None:
+        axs_td[1].plot(x, y_filtered, color='g', linewidth=0.7)
+        axs_td[1].set_title('After filtering')
+        axs_fd[1].plot(xf, yf_filtered, color='g', linewidth=0.7)
+        axs_fd[1].set_ylim([0, 0.2])
+        axs_fd[1].set_title('After filtering')
+
+    fig_td.tight_layout(pad=2.0)
+    fig_fd.tight_layout(pad=2.0)
+
+# Apply a Butterworth and Kaiser filter
+def filter_ecg_signal(y, Fs):
+    # Butterworth filter (low-pass)
+    b, a = signal.butter(4, 50 / (Fs / 2), 'low')
+    y_filtered = signal.filtfilt(b, a, y)
+
+    # Kaiser window filter to reduce baseline drift
+    nyq_rate = Fs / 2.0
+    width = 5.0 / nyq_rate
+    ripple_db = 60.0
+    O, beta = signal.kaiserord(ripple_db, width)
+    cutoff_hz = 4.0
+    taps = signal.firwin(O, cutoff_hz / nyq_rate, window=('kaiser', beta), pass_zero=False)
+    y_filtered = signal.lfilter(taps, 1.0, y_filtered)
+
+    return y_filtered
+
+# Detect R-peaks in filtered ECG signal
+def detect_r_peaks(dataset, y_filtered, Fs):
+    hrw = 1  # Window size as a proportion of Fs
+    mov_avg = dataset['filt'].rolling(int(hrw * Fs)).mean()
+    avg_hr = np.mean(dataset['filt'])
+    mov_avg = [avg_hr if math.isnan(x) else x for x in mov_avg]
+    mov_avg = [x * 1.2 for x in mov_avg]
+    dataset['filt_rollingmean'] = mov_avg
+
+    peaklist = []
+    window = []
+    for i, datapoint in enumerate(dataset['filt']):
+        rollingmean = dataset['filt_rollingmean'].iloc[i]
+        if datapoint > rollingmean:
+            window.append(datapoint)
+        elif window:
+            beatposition = i - len(window) + window.index(max(window))
+            peaklist.append(beatposition)
+            window = []
+    return peaklist
+
+# Plot detected R-peaks
+def plot_r_peaks(dataset, peaklist):
+    fig_hr, ax_hr = plt.subplots()
+    fig_hr.suptitle('Peak Detector')
+    ax_hr.plot(dataset['filt'], alpha=0.5, color='blue')
+    ax_hr.plot(dataset['filt_rollingmean'], color='green')
+    ax_hr.scatter(peaklist, dataset['filt'].iloc[peaklist], color='red')
+    ax_hr.set_title("Detected Peaks in Signal")
+
+# Calculate heart rate based on R-peaks
+def calculate_heart_rate(peaklist, Fs):
+    RR_intervals = np.diff(peaklist) / Fs * 1000  # Convert to ms
+    bpm = 60000 / np.mean(RR_intervals)
+    return bpm, len(peaklist)
+
+# Main processing function
+def main():
+    filepath = "ECG_data_noisy.csv"
+    Fs = 1000  # Sampling frequency (Hz)
+
+    # Load and process ECG data
+    y, dataset = load_ecg_data(filepath)
+    N = len(y)
+    x = np.linspace(0.0, N / Fs, N)
+
+    # Compute FFT before filtering
+    xf, yf = compute_fft(y, Fs)
+
+    # Filter the ECG signal
+    y_filtered = filter_ecg_signal(y, Fs)
+    dataset['filt'] = y_filtered
+
+    # Compute FFT after filtering
+    _, yf_filtered = compute_fft(y_filtered, Fs)
+
+    # Plot time and frequency domain signals
+    plot_time_freq_domain(x, y, xf, yf, y_filtered, yf_filtered)
+
+    # Detect R-peaks and plot
+    peaklist = detect_r_peaks(dataset, y_filtered, Fs)
+    plot_r_peaks(dataset, peaklist)
+
+    # Calculate heart rate
+    bpm, num_peaks = calculate_heart_rate(peaklist, Fs)
+    print(f"\nAverage Heart Rate: {bpm:.1f} BPM")
+    print(f"Number of peaks detected: {num_peaks}")
+
+    # Show plots
+    plt.show()
+
+# Run the main function
+if __name__ == "__main__":
+    main()
